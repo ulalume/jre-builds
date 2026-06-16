@@ -1,0 +1,74 @@
+name: build
+
+# Minimal Java runtime (jlink) per platform, for running SGDK's Java tools
+# (rescomp, sizebnd, ...) without a system JDK. sgdkx downloads jre-<platform>.tar.gz
+# and puts <jre>/bin on the Makefile PATH.
+#
+# Built from Eclipse Temurin (OpenJDK), which is GPLv2 + Classpath Exception — free
+# to redistribute. jlink preserves the runtime's legal/ notices.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['jdk*']   # e.g. jdk21-1
+
+permissions:
+  contents: write
+
+env:
+  JAVA_VERSION: "21"
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, runner: ubuntu-latest }
+          - { name: linux-arm64,  runner: ubuntu-24.04-arm }
+          - { name: macos-arm64,  runner: macos-14 }
+          - { name: macos-x86_64, runner: macos-15-intel }
+
+    steps:
+      - name: Set up Temurin JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: jlink minimal runtime
+        shell: bash
+        run: |
+          set -ex
+          rm -rf jre
+          # java.se aggregates the full SE API — safe for rescomp et al. without
+          # per-jar module analysis. Strip debug/man/headers and compress.
+          "$JAVA_HOME/bin/jlink" \
+            --add-modules java.se \
+            --strip-debug --no-header-files --no-man-pages --compress zip-6 \
+            --output jre
+          ./jre/bin/java -version
+
+      - name: Package
+        id: pkg
+        shell: bash
+        run: |
+          set -ex
+          ASSET="jre-${{ matrix.name }}.tar.gz"
+          tar czf "$ASSET" jre
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          ls -lh "$ASSET"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: jre-${{ matrix.name }}
+          path: ${{ steps.pkg.outputs.asset }}
+
+      - name: Attach to release (tag push only)
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.pkg.outputs.asset }}
